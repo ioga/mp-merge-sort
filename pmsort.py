@@ -7,10 +7,13 @@ import os
 from collections import deque
 from heapq import merge
 import shutil
+from itertools import islice
 
 import tempfile
 
-READ_BUF = 8192
+BUF_SIZE = 8192
+READ_BUF = BUF_SIZE
+WRITE_BUF_NUM = BUF_SIZE/4
 INPUT_FILE = 'input'
 OUTPUT_FILE = 'output'
 SORT_MEMORY_COUNT = 1000000
@@ -28,8 +31,10 @@ def read_file(f):
             yield struct.unpack('I', chunk[c*4:c*4+4])[0]
 
 def write_file(f, iterable):
-    for item in iterable:
-        f.write(struct.pack('I', item))
+    for chunk in iter(lambda: ''.join(struct.pack('I', item) for item in islice(iterable, WRITE_BUF_NUM)), ''):
+        f.write(chunk)
+#    for item in iterable:
+#        f.write(struct.pack('I', item))
 
 
 def merge_files(tmpdir, files):
