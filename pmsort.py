@@ -18,7 +18,7 @@ log = multiprocessing.log_to_stderr(level=logging.WARNING)
 
 # Defaults
 BUF_SIZE = 8192                         # Read-Write buffer size
-SORT_MEMORY_COUNT = 16 * 1024 * 1024    # Number of elements, that would be sorted in memory
+SORT_MEMORY_COUNT = 1 * 1024 * 1024    # Number of elements, that would be sorted in memory
 
 def merge(iterable1, iterable2):
     """Merge two sorted non-empty iterables. (It's faster than heapq.merge)"""
@@ -106,12 +106,13 @@ class Merger(multiprocessing.Process):
                         self.q.put(a)   # Just put it back
                         continue
 
+                self.c.value += 1
+                log.warn('Started merge {0}/{1}'.format(self.c.value, self.m))
                 new = self._merge(a, b)
                 os.unlink(a)
                 os.unlink(b)
                 self.q.put(new)
-                self.c.value += 1
-                log.warn('Merged {0}/{1}'.format(self.c.value, self.m))
+
         except Exception, ex:
             log.exception(ex)
             self.poison_pill.set()
@@ -152,11 +153,11 @@ class SortRunner(object):
         self.queue = multiprocessing.Queue()            # Job queue
         self.lock = multiprocessing.Lock()              # Lock for queue.get synchronization
         self.counter = multiprocessing.Value('I', 0)    # Job counter
-        self.chunks = self._get_chunks() - 1             # Number of jobs
+        self.chunks = self._get_chunks() - 1            # Number of jobs
         self.cpus = cpus or self._cpu_count()           # Number of merge processes
         self.bs = bufsize
         self.sort_mem_count = sort_mem_count
-        self.poison_pill = multiprocessing.Event()      # Graceful exit
+        self.poison_pill = multiprocessing.Event()      # Neede for graceful exit
 
     def run(self):
         """
