@@ -16,11 +16,12 @@ import time
 import logging
 log = multiprocessing.log_to_stderr(level=logging.WARNING)
 
-BUF_SIZE = 8192
-SORT_MEMORY_COUNT = 1 * 1024 * 1024
+# Defaults
+BUF_SIZE = 8192                         # Read-Write buffer size
+SORT_MEMORY_COUNT = 16 * 1024 * 1024    # Number of elements, that would be sorted in memory
 
 def merge(iterable1, iterable2):
-    """Merge two sorted iterables. (It's faster than heapq.merge)"""
+    """Merge two sorted non-empty iterables. (It's faster than heapq.merge)"""
     i1, i2 = iter(iterable1), iter(iterable2)
     v1, v2 = next(i1), next(i2)
     while True:
@@ -42,6 +43,7 @@ def merge(iterable1, iterable2):
                     yield next(i1)
 
 class Sorter(multiprocessing.Process):
+    """Internal sort worker"""
     def __init__(self, filename, queue, pill, tmpdir, sort_mem_count):
         self.filename = filename
         self.q = queue
@@ -81,6 +83,7 @@ class Sorter(multiprocessing.Process):
 
 
 class Merger(multiprocessing.Process):
+    """External sort worker"""
     QUEUE_TIMEOUT = 0.5
     def __init__(self, queue, lock, pill, counter, maxcount, tmpdir, bufsize):
         self.q = queue
@@ -103,7 +106,7 @@ class Merger(multiprocessing.Process):
                         self.q.put(a)   # Just put it back
                         continue
 
-                new = self.merge(a, b)
+                new = self._merge(a, b)
                 os.unlink(a)
                 os.unlink(b)
                 self.q.put(new)
@@ -113,19 +116,19 @@ class Merger(multiprocessing.Process):
             log.exception(ex)
             self.poison_pill.set()
 
-    def merge(self, file1, file2):
+    def _merge(self, file1, file2):
         with open(file1, 'rb') as f1, open(file2, 'rb') as f2:
             fd, pathname = tempfile.mkstemp(dir=self.tmpdir)
             with os.fdopen(fd, 'wb') as fout:
-                self.write_file(fout, merge(self.read_file(f1), self.read_file(f2))) # todo write our merge
+                self._write(fout, merge(self._read(f1), self._read(f2)))
         return pathname
 
-    def write_file(self, f, iterable):
+    def _write(self, f, iterable):
         write_count = self.bs / 4
         for chunk in iter(lambda: ''.join(struct.pack('I', item) for item in islice(iterable, write_count)), ''):
             f.write(chunk)
 
-    def read_file(self, f):
+    def _read(self, f):
         read_buf = self.bs
         for chunk in iter(lambda: f.read(read_buf), ''):
             for c in xrange(len(chunk)/4):
@@ -136,7 +139,7 @@ class SortRunner(object):
 
     def __init__(self, input, output, temp=None, cpus=None, bufsize=BUF_SIZE, sort_mem_count=SORT_MEMORY_COUNT):
         self.input, self.output = input, output
-        if not self.check_input():
+        if not self._check_input():
             sys.exit('Incorrect input file')
 
         self.tmpdir = tempfile.mkdtemp(dir=temp)        # Temporary directory for sorted parts
@@ -149,56 +152,57 @@ class SortRunner(object):
         self.queue = multiprocessing.Queue()            # Job queue
         self.lock = multiprocessing.Lock()              # Lock for queue.get synchronization
         self.counter = multiprocessing.Value('I', 0)    # Job counter
-        self.chunks = self.get_chunks() - 1             # Number of jobs
+        self.chunks = self._get_chunks() - 1             # Number of jobs
         self.cpus = cpus or self._cpu_count()           # Number of merge processes
         self.bs = bufsize
         self.sort_mem_count = sort_mem_count
-        self.poison_pill = multiprocessing.Event()
+        self.poison_pill = multiprocessing.Event()      # Graceful exit
 
     def run(self):
+        """
+        Since in-memory sort is much faster than external merge, single worker would be enough
+        """
         self.sorter = Sorter(self.input, self.queue, self.poison_pill, self.tmpdir, self.sort_mem_count)
-        self.sorter.start()
 
         self.pool = [ Merger(self.queue, self.lock, self.poison_pill, self.counter,
                             self.chunks, self.tmpdir, self.bs) for i in range(self.cpus) ]
+        self.pool.append(self.sorter)
         map(lambda p: p.start(), self.pool)
 
-        self.sorter.join()
-        if self.sorter.exitcode < 0:
-            self.poison_pill.set()
-            for p in self.pool:
-                p.join()
-            sys.exit('Sorter finished with negative exit code {0}'.format(self.sorter.exitcode))
+        def join_process(p):
+            p.join(1)
+            if p.is_alive():
+                p.terminate() # Finish process
 
         while len(self.pool): # If somebody dies, just kill the others.
             for p in self.pool:
                 if not p.is_alive():
-                    if p.exitcode < 0:
+                    if p.exitcode:
                         self.poison_pill.set()
-                        for p in self.pool:
-                            p.join()
-                        sys.exit('Merger finished with negative exit code {0}'.format(p.exitcode))
-                    p.join()
+                        for d in self.pool:
+                            join_process(d)
+                        sys.exit('Worker finished with non-zero exit code {0}'.format(p.exitcode))
+                    join_process(p)
                     self.pool.remove(p)
             time.sleep(1)
 
         if not self.poison_pill.is_set():
-            self.put_result()
+            self._put_result()
 
     def _cpu_count(self):
         """Returns number of cpus using multiprocessing with default fallback"""
         try: return multiprocessing.cpu_count()
         except NotImplementedError: return self.DEFAULT_CPUS
 
-    def check_input(self):
+    def _check_input(self):
         """If input file size if multiple of four"""
         return not os.path.getsize(self.input) % 4
 
-    def get_chunks(self):
+    def _get_chunks(self):
         """Number of data chunks to merge"""
         return (os.path.getsize(self.input) / 4 + SORT_MEMORY_COUNT - 1 )/ SORT_MEMORY_COUNT
 
-    def put_result(self):
+    def _put_result(self):
         """Move output file from tmpdir to it's location"""
         try:
             final = self.queue.get(block=False)
@@ -208,6 +212,7 @@ class SortRunner(object):
             shutil.move(final, self.output)
 
 class SortValidator(object):
+    """Validate result"""
     def __init__(self, input, output, bufsize=BUF_SIZE):
         self.input, self.output, self.bs = input, output, bufsize
     def run(self):
@@ -243,7 +248,7 @@ def main():
         print 'OK'
         return
 
-    if args.bs % 4 or not args.smc > 0 or (args.j is not None and args.j < 0):
+    if args.bs % 4 or not args.smc > 0 or (args.j and args.j < 0) or (args.t and not os.path.isdir(args.t)):
         sys.exit('Bad input parameter')
 
     try: SortRunner(args.input, args.output, args.t, args.j, args.bs, args.smc).run()
@@ -252,5 +257,4 @@ def main():
         sys.exit()
 
 if __name__ == "__main__":
-    #print list(merge([1,2,3,4,4],[1,4,4,4]))
     main()
