@@ -2,9 +2,7 @@
 
 import struct
 import numpy
-#import array
 import os
-from collections import deque
 from heapq import merge
 import shutil
 from itertools import islice
@@ -19,13 +17,12 @@ WRITE_BUF_NUM = BUF_SIZE/4
 INPUT_FILE = 'input'
 OUTPUT_FILE = 'output'
 SORT_MEMORY_COUNT = 1 * 1024 * 1024
+QUEUE_TIMEOUT = 0.2
 
 def sort_in_memory(f, count):
     data = numpy.fromfile(file=f, dtype=numpy.uint32, count=count)
     data.sort()
     return data
-#    with open(OUTPUT_FILE, 'wb') as fout:
-#        data.tofile(fout)
 
 def read_file(f):
     for chunk in iter(lambda: f.read(READ_BUF), ''):
@@ -35,9 +32,6 @@ def read_file(f):
 def write_file(f, iterable):
     for chunk in iter(lambda: ''.join(struct.pack('I', item) for item in islice(iterable, WRITE_BUF_NUM)), ''):
         f.write(chunk)
-#    for item in iterable:
-#        f.write(struct.pack('I', item))
-
 
 def merge_two_files(tmpdir, file1, file2):
     with open(file1, 'rb') as f1, open(file2, 'rb') as f2:
@@ -47,38 +41,6 @@ def merge_two_files(tmpdir, file1, file2):
         os.unlink(file1)
         os.unlink(file2)
         return pathname
-
-def merge_files(tmpdir, files):
-    while len(files) > 1:
-        print len(files)
-        with open(files.popleft(), 'rb') as f1, open(files.popleft(), 'rb') as f2:
-            fd, pathname = tempfile.mkstemp(dir=tmpdir)
-            with os.fdopen(fd, 'wb') as fout:
-                write_file(fout, merge(read_file(f1), read_file(f2)))
-            files.append(pathname)
-    return files.pop()
-
-def main():
-    tmpdir = tempfile.mkdtemp()
-    files = deque()
-    # In memory stage
-    with open(INPUT_FILE, 'rb') as fin:
-        while True:
-            data = sort_in_memory(fin, SORT_MEMORY_COUNT)
-            if not len(data):
-                break
-            fd, pathname = tempfile.mkstemp(dir=tmpdir)
-            with os.fdopen(fd, 'wb') as fout:
-                data.tofile(fout)
-            files.append(pathname)
-    # Merge stage
-    final = merge_files(tmpdir, files)
-    shutil.move(final, OUTPUT_FILE)
-    shutil.rmtree(tmpdir)
-
-def worker(work_queue, l, c, tmpdir):
-    print 'Worker started'
-    pass
 
 class Sorter(Process):
     def __init__(self, filename, queue, tmpdir):
@@ -114,9 +76,9 @@ class Merger(Process):
         while self.c.value < self.m-1:
             #print self.c.value, self.m
             with self.l:
-                try: a = self.q.get(timeout=0.1)
+                try: a = self.q.get(timeout=QUEUE_TIMEOUT)
                 except Queue.Empty: continue
-                try: b = self.q.get(timeout=0.1)
+                try: b = self.q.get(timeout=QUEUE_TIMEOUT)
                 except Queue.Empty:
                     self.q.put(a)
                     continue
@@ -128,7 +90,7 @@ class Merger(Process):
             self.c.value += 1
             print self.c.value
 
-def main_par():
+def main():
     tmpdir = tempfile.mkdtemp()
     files = multiprocessing.Queue()
     counter = Value('I', 0)
@@ -153,4 +115,4 @@ def main_par():
     shutil.rmtree(tmpdir)
 
 if __name__ == "__main__":
-    main_par()
+    main()
