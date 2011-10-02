@@ -30,15 +30,20 @@ class Sorter(multiprocessing.Process):
         super(Sorter, self).__init__()
 
     def run(self):
-        i = 0
-        smc = self.sort_mem_count
         with open(self.filename, 'rb') as fin:
+            self._do_loop(fin)
+
+    def _do_loop(self, fin):
+        try:
+            i = 0
+            smc = self.sort_mem_count
             while not self.poison_pill.is_set():
                 try:
                     data = numpy.fromfile(file=fin, dtype=numpy.uint32, count=smc)
                 except MemoryError:
-                    smc = self.shrink_memory(smc)
-                    continue
+                    self.poison_pill.set()
+                    log.error('Cannot allocate memory for sorting')
+                    return
                 if not len(data):
                     break
                 data.sort()
@@ -46,16 +51,13 @@ class Sorter(multiprocessing.Process):
                 with os.fdopen(fd, 'wb') as fout:
                     data.tofile(fout)
                 self.q.put(pathname)
-                i += 1
-                print 'Sorted chunk {0}'.format(i)
 
-    def shrink_memory(self, smc):
-        smc /= 2
-        if smc < 100:
-            print 'WTF?'
+                i += 1
+                log.info('Sorted chunk {0}'.format(i))
+        except Exception, ex:
+            log.exception(ex)
             self.poison_pill.set()
-            sys.exit()
-        return smc
+
 
 class Merger(multiprocessing.Process):
     QUEUE_TIMEOUT = 0.5
@@ -70,29 +72,31 @@ class Merger(multiprocessing.Process):
         super(Merger, self).__init__()
     
     def run(self):
-        while not self.poison_pill.is_set() and self.c.value < self.m-1:
-            with self.l: # Atomically take two elements from queue
-                try: a = self.q.get(timeout=self.QUEUE_TIMEOUT)
-                except Queue.Empty: continue
-                try: b = self.q.get(timeout=self.QUEUE_TIMEOUT)
-                except Queue.Empty:
-                    self.q.put(a)   # Just put it back
-                    continue
+        try:
+            while not self.poison_pill.is_set() and self.c.value < self.m:
+                with self.l: # Atomically take two elements from queue
+                    try: a = self.q.get(timeout=self.QUEUE_TIMEOUT)
+                    except Queue.Empty: continue
+                    try: b = self.q.get(timeout=self.QUEUE_TIMEOUT)
+                    except Queue.Empty:
+                        self.q.put(a)   # Just put it back
+                        continue
 
-            print 'Starting merge %s' % os.getpid()
-            new = self.merge(a, b)
-            os.unlink(a)
-            os.unlink(b)
-            print 'Ending merge %s' % os.getpid()
-            self.q.put(new)
-            self.c.value += 1
-            print self.c.value
+                new = self.merge(a, b)
+                os.unlink(a)
+                os.unlink(b)
+                self.q.put(new)
+                self.c.value += 1
+                log.warn('Merged {0}/{1}'.format(self.c.value, self.m))
+        except Exception, ex:
+            log.exception(ex)
+            self.poison_pill.set()
 
     def merge(self, file1, file2):
         with open(file1, 'rb') as f1, open(file2, 'rb') as f2:
             fd, pathname = tempfile.mkstemp(dir=self.tmpdir)
             with os.fdopen(fd, 'wb') as fout:
-                self.write_file(fout, heapq.merge(self.read_file(f1), self.read_file(f2)))
+                self.write_file(fout, heapq.merge(self.read_file(f1), self.read_file(f2))) # todo write our merge
         return pathname
 
     def write_file(self, f, iterable):
@@ -119,11 +123,12 @@ class SortRunner(object):
         def cleanup():
             log.info('Removing dir {0}'.format(dir))
             shutil.rmtree(self.tmpdir)
-        atexit.register(cleanup)     # Do not forget to cleanup after ourselves
+        atexit.register(cleanup)                        # Do not forget to cleanup after ourselves
+        
         self.queue = multiprocessing.Queue()            # Job queue
         self.lock = multiprocessing.Lock()              # Lock for queue.get synchronization
         self.counter = multiprocessing.Value('I', 0)    # Job counter
-        self.chunks = self.get_chunks()
+        self.chunks = self.get_chunks() - 1             # Number of jobs
         self.cpus = cpus or self._cpu_count()           # Number of merge processes
         self.bs = bufsize
         self.sort_mem_count = sort_mem_count
@@ -133,8 +138,8 @@ class SortRunner(object):
         self.sorter = Sorter(self.input, self.queue, self.poison_pill, self.tmpdir, self.sort_mem_count)
         self.sorter.start()
 
-        self.pool = { Merger(self.queue, self.lock, self.poison_pill, self.counter,
-                            self.chunks, self.tmpdir, self.bs) for i in range(self.cpus) }
+        self.pool = [ Merger(self.queue, self.lock, self.poison_pill, self.counter,
+                            self.chunks, self.tmpdir, self.bs) for i in range(self.cpus) ]
         map(lambda p: p.start(), self.pool)
 
         self.sorter.join()
@@ -219,7 +224,11 @@ def main():
 
     if args.bs % 4 or not args.smc > 0 or (args.j is not None and args.j < 0):
         sys.exit('Bad input parameter')
-    SortRunner(args.input, args.output, args.t, args.j, args.bs, args.smc).run()
+
+    try: SortRunner(args.input, args.output, args.t, args.j, args.bs, args.smc).run()
+    except Exception, ex:
+        log.exception(ex)
+        sys.exit()
 
 if __name__ == "__main__":
     main()
