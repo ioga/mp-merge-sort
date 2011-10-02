@@ -3,7 +3,6 @@
 import struct
 import numpy
 import os
-import heapq
 import shutil
 from itertools import islice
 import multiprocessing
@@ -19,6 +18,28 @@ log = multiprocessing.log_to_stderr(level=logging.WARNING)
 
 BUF_SIZE = 8192
 SORT_MEMORY_COUNT = 1 * 1024 * 1024
+
+def merge(iterable1, iterable2):
+    """Merge two sorted iterables. (It's faster than heapq.merge)"""
+    i1, i2 = iter(iterable1), iter(iterable2)
+    v1, v2 = next(i1), next(i2)
+    while True:
+        if v1 < v2:
+            yield v1
+            try:
+                v1 = next(i1)
+            except StopIteration:
+                yield v2
+                while True:
+                    yield next(i2)
+        else:
+            yield v2
+            try:
+                v2 = next(i2)
+            except StopIteration:
+                yield v1
+                while True:
+                    yield next(i1)
 
 class Sorter(multiprocessing.Process):
     def __init__(self, filename, queue, pill, tmpdir, sort_mem_count):
@@ -96,7 +117,7 @@ class Merger(multiprocessing.Process):
         with open(file1, 'rb') as f1, open(file2, 'rb') as f2:
             fd, pathname = tempfile.mkstemp(dir=self.tmpdir)
             with os.fdopen(fd, 'wb') as fout:
-                self.write_file(fout, heapq.merge(self.read_file(f1), self.read_file(f2))) # todo write our merge
+                self.write_file(fout, merge(self.read_file(f1), self.read_file(f2))) # todo write our merge
         return pathname
 
     def write_file(self, f, iterable):
@@ -149,7 +170,7 @@ class SortRunner(object):
                 p.join()
             sys.exit('Sorter finished with negative exit code {0}'.format(self.sorter.exitcode))
 
-        while len(self.pool):
+        while len(self.pool): # If somebody dies, just kill the others.
             for p in self.pool:
                 if not p.is_alive():
                     if p.exitcode < 0:
@@ -231,4 +252,5 @@ def main():
         sys.exit()
 
 if __name__ == "__main__":
+    #print list(merge([1,2,3,4,4],[1,4,4,4]))
     main()
