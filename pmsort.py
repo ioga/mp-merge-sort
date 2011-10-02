@@ -18,7 +18,7 @@ READ_BUF = BUF_SIZE
 WRITE_BUF_NUM = BUF_SIZE/4
 INPUT_FILE = 'input'
 OUTPUT_FILE = 'output'
-SORT_MEMORY_COUNT = 16 * 1024 * 1024
+SORT_MEMORY_COUNT = 1 * 1024 * 1024
 
 def sort_in_memory(f, count):
     data = numpy.fromfile(file=f, dtype=numpy.uint32, count=count)
@@ -44,6 +44,8 @@ def merge_two_files(tmpdir, file1, file2):
         fd, pathname = tempfile.mkstemp(dir=tmpdir)
         with os.fdopen(fd, 'wb') as fout:
             write_file(fout, merge(read_file(f1), read_file(f2)))
+        os.unlink(file1)
+        os.unlink(file2)
         return pathname
 
 def merge_files(tmpdir, files):
@@ -111,17 +113,13 @@ class Merger(Process):
         print 'Running Merger'
         while self.c.value < self.m-1:
             #print self.c.value, self.m
-            self.l.acquire()
-            try: a = self.q.get(timeout=0.1)
-            except Queue.Empty:
-                self.l.release()
-                continue
-            try: b = self.q.get(timeout=0.1)
-            except Queue.Empty:
-                self.q.put(a)
-                self.l.release()
-                continue
-            self.l.release()
+            with self.l:
+                try: a = self.q.get(timeout=0.1)
+                except Queue.Empty: continue
+                try: b = self.q.get(timeout=0.1)
+                except Queue.Empty:
+                    self.q.put(a)
+                    continue
 
             print 'Starting merge %s' % os.getpid()
             new = merge_two_files(self.tmpdir, a, b)
