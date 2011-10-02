@@ -123,9 +123,7 @@ class SortRunner(object):
         return not os.path.getsize(self.input) % 4
 
     def get_chunks(self):
-        size = os.path.getsize(self.input)
-        return size / 4 / SORT_MEMORY_COUNT + (1 if size / 4 % SORT_MEMORY_COUNT else 0)
-        #return (size / 4 + SORT_MEMORY_COUNT - 1 )/ SORT_MEMORY_COUNT
+        return (os.path.getsize(self.input) / 4 + SORT_MEMORY_COUNT - 1 )/ SORT_MEMORY_COUNT
 
 def main():
     SortRunner(INPUT_FILE, OUTPUT_FILE).run()
