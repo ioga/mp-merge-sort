@@ -1,24 +1,24 @@
 #!/usr/bin/env python
 
-import struct
-import numpy
 import os
 import shutil
+import tempfile
+import sys
+import struct
+import numpy
 from itertools import islice
 import multiprocessing
-import tempfile
 import Queue
-import argparse
-import sys
-import atexit
 import time
+import atexit
+import argparse
 
 import logging
 log = multiprocessing.log_to_stderr(level=logging.WARNING)
 
 # Defaults
 BUF_SIZE = 8192                         # Read-Write buffer size
-SORT_MEMORY_COUNT = 1 * 1024 * 1024    # Number of elements, that would be sorted in memory
+SORT_MEMORY_COUNT = 16 * 1024 * 1024    # Number of elements, that would be sorted in memory
 
 def merge(iterable1, iterable2):
     """Merge two sorted non-empty iterables. (It's faster than heapq.merge)"""
@@ -65,7 +65,7 @@ class Sorter(multiprocessing.Process):
                     data = numpy.fromfile(file=fin, dtype=numpy.uint32, count=smc)
                 except MemoryError:
                     self.poison_pill.set()
-                    log.error('Cannot allocate memory for sorting')
+                    log.error('Cannot allocate memory for sorting. Try lower -smc setting.')
                     return
                 if not len(data):
                     break
@@ -141,7 +141,7 @@ class SortRunner(object):
     def __init__(self, input, output, temp=None, cpus=None, bufsize=BUF_SIZE, sort_mem_count=SORT_MEMORY_COUNT):
         self.input, self.output = input, output
         if not self._check_input():
-            sys.exit('Incorrect input file')
+            sys.exit('Incorrect input file (its size should be multiple of 4)')
 
         self.tmpdir = tempfile.mkdtemp(dir=temp)        # Temporary directory for sorted parts
 
