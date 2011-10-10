@@ -166,7 +166,7 @@ class SortRunner(object):
         self.sorter = Sorter(self.input, self.queue, self.poison_pill, self.tmpdir, self.sort_mem_count)
 
         self.pool = [ Merger(self.queue, self.lock, self.poison_pill, self.counter,
-                            self.chunks, self.tmpdir, self.bs) for i in range(self.cpus) ]
+            self.chunks, self.tmpdir, self.bs) for i in range(self.cpus) ]
         self.pool.append(self.sorter)
         map(lambda p: p.start(), self.pool)
 
